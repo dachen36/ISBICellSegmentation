@@ -12,6 +12,7 @@
 - 数据 / Data
 - 模型与推理 / Model & Inference
 - 训练（可选） / Training (optional)
+- 网络结构说明 / Network Architecture
 - 贡献 / Contributing
 - 许可证 / License
 - 联系 / Contact
@@ -108,6 +109,230 @@ We recommend using a virtual environment:
 - train.py: 训练流程示例，包含数据加载、损失函数、训练循环和模型保存。
 - 如果你计划训练自己的模型，请在 README 中补充数据格式、超参数和训练脚本示例命令。
 
+---
+
+## 网络结构说明（中文）
+
+本项目目前实现的是一个面向血管分割的轻量级 U-Net 基线模型，主要用于论文复现尝试和实验验证。代码中包含两个规模不同的版本：`main.py` 中的 `TinyUNet` 和 `main2.py` 中的 `UNetPro`。
+
+### 整体结构
+
+```text
+输入灰度图像（1 × 256 × 256）
+        │
+        ▼
+DoubleConv：提取浅层特征
+        │
+        ├──────────── 跳跃连接 ────────────┐
+        ▼                                  │
+MaxPool2d：下采样                         │
+        │                                  │
+DoubleConv：提取更深层特征                │
+        │                                  │
+双线性上采样：恢复空间分辨率               │
+        │                                  │
+        └──── 与浅层特征进行拼接 ──────────┘
+                       │
+                 DoubleConv
+                       │
+                 1×1 卷积输出
+                       │
+                       ▼
+                  血管分割掩膜
+```
+
+### `TinyUNet`
+
+`TinyUNet` 是轻量版本，结构为：
+
+- 输入通道：1（灰度图像）
+- 第一阶段：`1 → 32` 个特征通道
+- 下采样后：`32 → 64` 个特征通道
+- 双线性上采样恢复分辨率
+- 与浅层的 32 通道特征进行跳跃连接
+- 拼接后的 `96` 个通道经过卷积变为 `32` 个通道
+- 最后通过 `1×1` 卷积输出 1 通道预测图
+
+### `UNetPro`
+
+`UNetPro` 是增强版本，整体结构与 `TinyUNet` 类似，但使用更多特征通道：
+
+- 第一阶段：`1 → 64`
+- 下采样后：`64 → 128`
+- 上采样后与浅层的 64 通道特征拼接
+- 拼接后的 `192` 个通道经过卷积变为 `64` 个通道
+- 最后输出 1 通道血管分割预测图
+
+因此，`UNetPro` 具有更强的特征提取能力，但需要更多显存和计算资源。
+
+### DoubleConv 模块
+
+每个 `DoubleConv` 模块包含两次卷积操作：
+
+```text
+3×3 卷积 → BatchNorm → ReLU
+3×3 卷积 → BatchNorm → ReLU
+```
+
+其中：
+
+- 3×3 卷积用于提取局部图像特征；
+- BatchNorm 有助于稳定训练；
+- ReLU 提供非线性表达能力。
+
+### 跳跃连接（Skip Connection）
+
+U-Net 的跳跃连接会把编码器中的浅层特征直接传给解码器。浅层特征包含较多的边缘和位置信息，这对于恢复细小血管、减少分割边界模糊非常重要。
+
+### 数据预处理流程
+
+```text
+读取灰度图像
+    → 调整为 256×256
+    → 使用 CLAHE 增强局部对比度
+    → 归一化到 [0, 1]
+    → 输入网络
+    → Sigmoid 得到血管概率图
+    → 使用 0.5 阈值二值化
+    → 输出分割掩膜
+```
+
+### 损失函数
+
+项目使用 BCE Loss 和 Dice Loss 的混合损失：
+
+```text
+MixedLoss = α × BCE Loss + (1 - α) × Dice Loss
+```
+
+- BCE Loss：进行像素级前景/背景分类；
+- Dice Loss：衡量预测血管区域与真实标注区域的重叠程度；
+- 混合损失更适合前景像素较少的血管分割任务。
+
+### 训练流程
+
+训练过程包括：
+
+1. 从 `images/` 读取原始图像；
+2. 从 `masks/` 读取对应的血管标注；
+3. 完成尺寸调整、CLAHE 增强和归一化；
+4. 使用 U-Net 前向推理；
+5. 计算 BCE + Dice 混���损失；
+6. 反向传播并更新网络参数；
+7. 根据损失变化动态调整学习率；
+8. 定期生成原图、真实标注、预测结果和叠加图；
+9. 保存训练后的模型权重。
+
+### 复现说明
+
+本项目是对血管分割任务的轻量化复现和实验性实现。当前代码实现的是简化版 U-Net 基线模型，并不一定完全等同于目标论文中的原始网络结构。若要严格复现论文结果，还需要根据论文补充数据集划分、数据增强、训练超参数、评价指标以及论文中的专用模块。
+
+---
+
+## Network Architecture (English)
+
+This project currently implements a lightweight U-Net baseline for vessel segmentation. It is intended for paper-reproduction experiments and practical demonstrations. Two model variants are provided: `TinyUNet` in `main.py` and `UNetPro` in `main2.py`.
+
+### Overall architecture
+
+The network follows an encoder-decoder design:
+
+```text
+Grayscale input (1 × 256 × 256)
+        │
+        ▼
+DoubleConv: shallow feature extraction
+        │
+        ├──────────── skip connection ────────────┐
+        ▼                                          │
+MaxPool2d: downsampling                            │
+        │                                          │
+DoubleConv: deeper feature extraction              │
+        │                                          │
+Bilinear upsampling: restore resolution             │
+        │                                          │
+        └──── concatenate shallow features ────────┘
+                       │
+                 DoubleConv
+                       │
+                 1×1 output convolution
+                       │
+                       ▼
+                Vessel segmentation mask
+```
+
+### `TinyUNet`
+
+`TinyUNet` is the lightweight variant:
+
+- Input channels: 1 grayscale channel
+- First stage: `1 → 32` feature channels
+- Downsampled stage: `32 → 64`
+- Bilinear upsampling restores the spatial resolution
+- The upsampled features are concatenated with the 32-channel shallow features
+- The concatenated 96 channels are processed into 32 channels
+- A final `1×1` convolution produces a one-channel prediction map
+
+### `UNetPro`
+
+`UNetPro` follows the same basic design but uses more feature channels:
+
+- First stage: `1 → 64`
+- Downsampled stage: `64 → 128`
+- The upsampled features are concatenated with 64-channel shallow features
+- The concatenated 192 channels are processed into 64 channels
+- A final one-channel output represents the vessel segmentation prediction
+
+`UNetPro` has greater feature capacity but requires more memory and computation than `TinyUNet`.
+
+### DoubleConv block
+
+Each `DoubleConv` block consists of:
+
+```text
+3×3 convolution → BatchNorm → ReLU
+3×3 convolution → BatchNorm → ReLU
+```
+
+The convolutions extract local features, BatchNorm helps stabilize training, and ReLU provides nonlinear representation capacity.
+
+### Skip connections
+
+Skip connections transfer shallow encoder features directly to the decoder. These features preserve edge and location information, which helps recover thin vessels and produce sharper segmentation boundaries.
+
+### Preprocessing pipeline
+
+```text
+Read grayscale image
+    → resize to 256×256
+    → enhance local contrast with CLAHE
+    → normalize to [0, 1]
+    → feed into the network
+    → apply Sigmoid for vessel probabilities
+    → threshold at 0.5
+    → output binary vessel mask
+```
+
+### Loss function
+
+The project uses a mixed BCE and Dice loss:
+
+```text
+MixedLoss = α × BCE Loss + (1 - α) × Dice Loss
+```
+
+BCE handles pixel-level foreground/background classification, while Dice loss measures the overlap between the predicted vessel region and the ground-truth mask. The combination is useful for vessel segmentation, where vessel pixels are usually much fewer than background pixels.
+
+### Training pipeline
+
+The training process includes loading images and masks, resizing and preprocessing them, running U-Net inference, calculating the mixed BCE-Dice loss, updating the model through backpropagation, adjusting the learning rate, periodically generating visualization results, and saving the trained weights.
+
+### Reproduction note
+
+This repository is a lightweight and experimental reproduction for vessel segmentation. The current implementation is a simplified U-Net baseline and may not be identical to the original network in the target paper. Strict reproduction would require matching the paper's dataset split, augmentation strategy, hyperparameters, evaluation metrics, and any paper-specific modules.
+
+---
+
 ## Contributing
 欢迎贡献：请通过 Fork → 新建分支 → 提交 → 发起 Pull Request 的流程贡献代码。提交 Issue 报告 bug 或提出功能请求。
 
@@ -122,6 +347,3 @@ We recommend using a virtual environment:
 ---
 
 谢谢使用 VesselSegmentationDemo！
-
----
-
